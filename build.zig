@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub fn get_readline_module(b: *std.Build, target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode, lib: *std.Build.Step.Compile) struct {
+    optimize: std.builtin.OptimizeMode, install_lib_step: *std.Build.Step) struct {
     module: *std.Build.Module,
     translation: *std.Build.Step.TranslateC,
 } {
@@ -16,7 +16,8 @@ pub fn get_readline_module(b: *std.Build, target: std.Build.ResolvedTarget,
         .optimize = optimize,
     });
     readline_translation.addIncludePath(.{ .cwd_relative = b.getInstallPath(.prefix, "include") });
-    readline_translation.step.dependOn(&lib.step);
+    // Depend on the install step so that headers are available in the prefix
+    readline_translation.step.dependOn(install_lib_step);
     // build readline as module
     const mod_readline = b.addModule("readline", .{
         .root_source_file = readline_translation.getOutput(),
@@ -32,11 +33,11 @@ pub fn get_readline_module(b: *std.Build, target: std.Build.ResolvedTarget,
 }
 
 pub fn get_history_module(b: *std.Build, target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode, lib: *std.Build.Step.Compile) struct {
+    optimize: std.builtin.OptimizeMode, install_lib_step: *std.Build.Step) struct {
     module: *std.Build.Module,
     translation: *std.Build.Step.TranslateC,
 } {
-    // Create the history module to be used in zig with `@import("readline")`
+    // Create the history module to be used in zig with `@import("history")`
     const history_translation = b.addTranslateC(.{
         // readline needs stdio to be included first, that's why this shenanigan
         .root_source_file = b.addWriteFiles().add("history-bundle.h",
@@ -47,7 +48,8 @@ pub fn get_history_module(b: *std.Build, target: std.Build.ResolvedTarget,
         .optimize = optimize,
     });
     history_translation.addIncludePath(.{ .cwd_relative = b.getInstallPath(.prefix, "include") });
-    history_translation.step.dependOn(&lib.step);
+    // Depend on the install step so that headers are available in the prefix
+    history_translation.step.dependOn(install_lib_step);
     // build readline as module
     const mod_history = b.addModule("history", .{
         .root_source_file = history_translation.getOutput(),
@@ -104,7 +106,8 @@ pub fn build(b: *std.Build) !void {
         "rltypedefs.h",
         "tilde.h",
     } });
-    b.installArtifact(lib);
+    const install_lib = b.addInstallArtifact(lib, .{});
+    b.getInstallStep().dependOn(&install_lib.step);
 
     const libdyn = b.addLibrary(.{
         .name = "libdyn",
@@ -113,10 +116,11 @@ pub fn build(b: *std.Build) !void {
     });
     b.installArtifact(libdyn);
 
-    const readline_artefacts = get_readline_module(b, target, optimize, lib);
-    const history_artefacts = get_history_module(b, target, optimize, lib);
+    const readline_artefacts = get_readline_module(b, target, optimize, &install_lib.step);
+    const history_artefacts = get_history_module(b, target, optimize, &install_lib.step);
 
-    // Add a test executable
+    // Add a test/demo executable (only built when 'zig build run' is invoked)
+    const run_step = b.step("run", "Run the demo app");
     const exe = b.addExecutable(.{
         .name = "test",
         .root_module = b.createModule(.{
@@ -129,15 +133,12 @@ pub fn build(b: *std.Build) !void {
     exe.root_module.linkSystemLibrary("curses", .{});
     exe.root_module.addImport("readline", readline_artefacts.module);
     exe.root_module.addImport("history", history_artefacts.module);
-    b.installArtifact(exe);
-    // Add a run step
-    const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
-    run_step.dependOn(&run_cmd.step);
-    run_cmd.step.dependOn(b.getInstallStep());
+    run_cmd.step.dependOn(&install_lib.step);
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
+    run_step.dependOn(&run_cmd.step);
 }
 
 const srcs: []const []const u8 = &.{
